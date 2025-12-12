@@ -1,0 +1,242 @@
+Phase One: Detailed Design for Presentation
+Problem Statement: We need to help users understand why a field, such as "quantity," in our application’s UI may appear different or off. In Phase One, we want to detect if a recent code or logic change is the cause.
+Approach: We'll use an LLM to analyze both our Jira issues and our GitHub repositories. The LLM will start by checking Jira for any relevant tickets, but even if a ticket is found, it will still examine GitHub to confirm the actual code changes. If there's no direct change to the field, the LLM will recursively trace the logic to see how that field is calculated and whether any related logic has changed.
+Tools Needed:
+1. Jira API Tool: To query recent Jira tickets related to the field.
+2. GitHub API Tool: To search across GitHub repos, inspect file contents, and review commit history.
+3. Filtering and Identification Logic: To determine which repos and files to examine, based on our metadata and naming conventions.
+Flow:
+1. User Query: The user asks why the field is different.
+2. Check Jira: The LLM queries Jira for any related tickets.
+3. Check GitHub Regardless: Whether or not a Jira ticket is found, the LLM will examine the GitHub repos to confirm actual code changes.
+4. Recursive Logic Tracing: If no direct change to the field is found, the LLM will trace back through the code to see how the field is calculated and check if any related fields have changed.
+5. Provide Explanation: The LLM will then explain to the user what changed, referencing the actual code changes and logic.
+Additional Context and Metadata:
+* We will provide the LLM with metadata about which service is in which repo and what each service does. This will help it navigate the codebase even if the code doesn’t have comments.
+* We will start from the UI layer and trace back to the service so the LLM can handle differences in variable names or terminology.
+Boundary Conditions:
+* If no changes are found in either Jira or GitHub, the LLM will inform the user that there were no recent logic changes and that we may need to look at input differences in Phase Two.
+
+
+User Query
+    |
+    v
+[Use Jira API Tool] <--> LLM checks Jira
+    |
+    v
+[Use Repo Filtering Tool (with Metadata)] <--> LLM filters repos
+    |
+    v
+For each repo:
+    [Use GitHub File Content Tool] <--> LLM checks file content
+    |
+    [Use GitHub Commit History Tool] <--> LLM checks commits
+    |
+    v
+Recursively trace logic if needed
+    |
+    v
+Provide explanation to user
+
+
+
+
+
+
+
+Problem Statement:
+If Phase One confirms that no code or logic change is responsible for the unexpected UI value (e.g., quantity), Phase Two focuses on determining whether the difference is caused by input data differences between a known good run and the current run.
+Inputs may come from various systems (feeds, upstream APIs, message pipelines). Users typically do not know these inputs explicitly. Therefore, the system must retrieve, summarize, and compare structured input artifacts from a known-good date to the current date — in a controlled, privacy-safe way — and identify which input difference is causing the output deviation.
+
+Approach:
+1. Select or identify a "known good" run (a date/time where the output for the field was correct).
+2. Re-run Phase One logic for that good run to confirm that the code/logic used then is the same as what is running today.
+    * If code differs → return to Phase One (because the baseline itself is invalid).
+3. Fetch structured input artifacts for both runs (good date vs. current date) using configured tools (Splunk API, file system connectors, feed repositories, etc.).
+    * We do not read raw logs wholesale; we extract only the relevant input payloads for those runs.
+4. Summarize and filter inputs to isolate the fields that influence the target field (e.g., quantity).
+5. Compare the baseline inputs vs. current inputs field-by-field to identify differences.
+6. Run sanity checks (e.g., missing fields, negative values, timestamp mismatches) to detect suspicious or invalid inputs.
+7. Trace expected outputs using the verified logic and the extracted inputs to validate whether the input difference explains the UI difference.
+8. Provide a final explanation identifying the input-level root cause, or escalate as “inconclusive” if the input cannot fully explain the change.
+
+Tools Needed:
+1. Input Fetching Tools:
+    * Splunk Query Tool (if Splunk is used)
+    * File System/Feed Reader Tool
+    * Message Store / API Payload Reader Tool Used to retrieve input artifacts for a given run ID or timestamp.
+2. Input Filtering / Summarization Tool:
+    * Extracts only the relevant fields from the input payloads.
+    * Normalizes naming (e.g., qty, QTY, quantity).
+3. Input Comparison Tool:
+    * Computes differences between baseline and current inputs.
+    * Identifies missing, changed, or newly added fields.
+4. Sanity Check Tool:
+    * Runs domain-specific checks: negative values, nulls, out-of-range, type mismatches, unexpected currency/unit, etc.
+5. (Optional) Logic Simulation Tool:
+    * Re-executes the verified logic using both sets of inputs, comparing expected vs. actual outputs.
+6. Result Formatter:
+    * Converts technical findings into clear explanations for users and support teams.
+Metadata Context (not a tool):
+* Field → upstream service mapping
+* Service → repo mapping (from Phase One)
+* Feed/input source definitions
+* Naming conventions & synonyms Metadata helps the LLM know where inputs originate, how pipelines connect, and which fields influence the target— even if logs/feeds are sparse or difficult to interpret.
+
+Flow:
+1. No code change found in Phase One → trigger Phase Two.
+2. Identify “good date” input:
+    * Either provided by user
+    * Or selected automatically (most recent date where output was validated)
+3. Re-run Phase One for the good date to confirm the code/logic used then matches today’s logic.
+    * If mismatch → Phase One takes over (code change explanation).
+4. Use Input Fetching Tool(s) to retrieve structured input payloads for:
+    * Baseline run (good date)
+    * Current run
+5. LLM <--> Input Summarization Tool
+    * Extract only relevant fields that influence the calculation of the target field.
+6. LLM <--> Input Comparison Tool
+    * Compare baseline inputs vs. current inputs field-by-field.
+7. LLM <--> Sanity Check Tool
+    * Identify suspicious fields (missing, negative, extreme outliers, wrong type).
+8. Optional: LLM <--> Logic Simulation Tool
+    * Validate whether the current inputs, when run through the verified logic, produce the observed unexpected output.
+9. Provide Explanation:
+    * Highlight specific input differences that caused the output deviation.
+    * Include sanity flags and impact reasoning.
+    * If no meaningful differences found → escalate as “inconclusive — additional investigation needed.”
+
+Additional Context & Metadata:
+* Metadata helps identify:
+    * Which service produced which input
+    * What each field means
+    * Which fields feed into the final calculation
+* Input sources vary (feeds, APIs, message queues), but metadata ensures LLM knows where to look and how to interpret extracted values.
+* LLM starts by validating logic parity so it can trust that the only variable left is input data.
+
+Boundary Conditions:
+* If baseline logic does not match current logic → Phase Two aborts, and Phase One must re-diagnose.
+* If input artifacts are missing or incomplete → LLM reports “insufficient data to compare inputs.”
+* If extracted input is too large (hundreds of MB/GB) → summarization layer condenses the data before sending to LLM.
+* If no meaningful input differences found → explanation notes low confidence and recommends manual investigation.
+
+
+
+
+
+No code/logic change found in Phase One
+    |
+    v
+Select "Good Date" (baseline run)
+    |
+    v
+[LLM] <--> Phase One Tools (Jira, GitHub)
+    |
+Verify baseline code = current code?
+    |                   \
+   Yes                    No -> Return to Phase One (code change)
+    |
+    v
+[LLM] <--> [Input Fetching Tool(s)]
+    |
+    v
+[LLM] <--> [Input Summarization Tool]
+    |
+    v
+[LLM] <--> [Input Comparison Tool]
+    |
+    v
+[LLM] <--> [Sanity Check Tool]
+    |
+    v
+(Optional) [LLM] <--> [Logic Simulation Tool]
+    |
+    v
+Provide input-level explanation to user
+
+
+
+
+
+List of tools
+
+1) Clarify: Metadata vs Tools
+* Metadata (context) — static/background info fed into the LLM at start of the session:
+    * service → repo mapping
+    * repo ownership
+    * naming conventions and synonyms
+    * field → service mapping (UI→service)
+    * feed / input source registry Metadata is not a dynamic tool call — it’s context to guide the LLM.
+* Tools — LangGraph-callable functions with defined inputs/outputs. The LLM chooses and calls tools based on the metadata context.
+
+2) Updated Tools List (Phase One + Phase Two highlights)
+Make Input Summarizer explicit. Here’s the minimal canonical set:
+Phase-One relevant tools
+1. Jira API Tool — search tickets, extract linked commits.
+2. Repo Discovery Tool — list repos, branches, tags.
+3. Repo Filtering Tool — filter/prioritize repos (uses metadata sent as context).
+4. GitHub Search Tool — code search (keyword/regex).
+5. GitHub File Content Tool — fetch file at path + SHA.
+6. GitHub Commit History Tool — commits for file/path.
+7. GitHub Blame Tool — line-level commit origin.
+8. Code Analyzer Tool — produce call-graph / dependency nodes (AST-based).
+9. Result Formatter — compose final evidence.
+Phase-Two relevant tools (now explicit)
+1. Input Fetching Tool(s) — Splunk API / File system / Message store connectors (fetch structured payloads for given run id or timeframe).
+2. Input Summarizer Tool (NEW, FIRST-CLASS) — extracts only the relevant fields, canonicalizes names (qty/QTY/quantity), masks PII, and returns a compact JSON schema per run.
+3. Input Comparison Tool — performs field-aligned diffs between baseline and current summarized inputs.
+4. Sanity-Check Tool — runs domain heuristics and returns flags + severity.
+5. Logic Simulation Tool (optional) — executes or simulates verified logic against inputs (sandboxed).
+6. Result Formatter — presents findings to user.
+
+3) Why Input Summarizer must be a tool
+* Scales and protects: large raw logs/feeds are heavy and contain sensitive data. Summarizer reduces size and redacts sensitive fields before LLM sees anything.
+* Deterministic: gives consistent extraction and canonicalization logic (same normalized names each run).
+* Pluggable: different connectors (Splunk/S3/Kafka) feed the Summarizer; centralizing summarization avoids repeated logic in LLM prompts.
+* Auditable: tool logs exactly what it extracted and redacted for compliance.
+* Faster & cheaper: LLM receives only small payloads, not GBs of logs.
+
+
+No code/logic change found in Phase One
+    |
+    v
+Select "Good Date" (baseline run)  <-- user or heuristic
+    |
+    v
+[LLM] (has Metadata context: UI->service map, repo list, synonyms)
+    |
+    v
+[LLM] <--> Phase-One Tools (confirm baseline code parity)
+    |
+    v
+Verify baseline code = current code?
+    |                   \
+   Yes                    No -> Return to Phase One (code change)
+    |
+    v
+[LLM] <--> [Input Fetching Tool(s)]    : pull structured input artifacts for T_good & T_now
+    |
+    v
+[LLM] <--> [Input Summarizer Tool]    : EXTRACT & NORMALIZE relevant fields (qty, price, sku...), REDACT PII
+    |
+    v
+[LLM] <--> [Input Comparison Tool]    : field-by-field diffs (baseline vs current)
+    |
+    v
+[LLM] <--> [Sanity-Check Tool]        : run rules (negative price, missing field...)
+    |
+    v
+(Optional) [LLM] <--> [Logic Simulation Tool] : run verified logic on summarized inputs
+    |
+    v
+[Result Formatter] -> Final Explanation (evidence + recommended action)
+
+
+
+Key interactions:
+* Metadata helps LLM pick which Input Fetcher to call (which feed, run id), and to interpret fields the Summarizer extracts.
+* Input Summarizer returns compact, canonical JSON (e.g., { "qty": 12, "price": 10.5, "currency": "USD" }) plus provenance (source, timestamp, run_id).
+* LLM uses those summarized payloads to drive Comparison & Sanity checks — not raw logs.
+
+
+
